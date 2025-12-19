@@ -1,0 +1,10 @@
+services:
+    ns3:
+        build: .
+        # image: ghcr.io/harlequix/ns:3.45
+        container_name: ns3
+        tty: true
+        stdin_open: true
+        volumes:
+            - ./scratch:/usr/ns3/ns3-latest/scratch
+        command: /bin/bash
