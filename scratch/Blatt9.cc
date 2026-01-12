@@ -1,4 +1,11 @@
-/* Aufgabe 9 */
+/* 
+
+Aufgabe 9 - Transportprotokolle und Ihr Entwurf
+name: Ali Bakhshi
+Matrikelnummer: 3625262
+
+*/
+
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
 #include "ns3/internet-module.h"
@@ -7,251 +14,190 @@
 #include "ns3/ipv4-global-routing-helper.h"
 #include "ns3/flow-monitor-module.h"
 #include <string>
-#include <vector>
 #include <iostream>
+#include <iomanip>
 
-// For Flow Monitor for Aufgabe 2
-#include "ns3/flow-monitor-module.h"
+using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE("Aufgabe9-Topology");
+NS_LOG_COMPONENT_DEFINE("Aufgabe9_Sim");
 
-void debugNodes(ns3::NodeContainer nodes)
-{
-    for (uint32_t n = 0; n < nodes.GetN(); ++n)
-    {
-        ns3::Ptr<ns3::Node> node = nodes.Get(n);
-        std::cout << "Node " << node->GetId() << " has IP addresses: ";
-        ns3::Ptr<ns3::Ipv4> ipv4 = node->GetObject<ns3::Ipv4>();
-        for (uint32_t i = 0; i < ipv4->GetNInterfaces(); ++i)
-        {
-            for (uint32_t j = 0; j < ipv4->GetNAddresses(i); ++j)
-            {
-                ns3::Ipv4Address addr = ipv4->GetAddress(i, j).GetLocal();
-                std::cout << addr << " ";
-            }
-        }
-        std::cout << std::endl;
-    }
-}
-
-// Transmission tracer flag for first packet to avoid double logging
-static bool gen_first_packet = true;
-// Last transmission time to calculate inter-arrival times
-static ns3::Time gen_last_trans_time = ns3::Seconds(0.0);
-
-void transmission_tracer(ns3::Ptr<const ns3::Packet> p)
-{
-    ns3::Time now = ns3::Simulator::Now();
-    std::cout << "Packet of size " << p->GetSize() << " bytes transmitted at " << now.GetSeconds() << " seconds." << std::endl;
-    if (!gen_first_packet)
-    {
-        ns3::Time inter_arrival = now - gen_last_trans_time;
-        std::cout << "Inter-arrival time since last packet: " << inter_arrival.GetSeconds() << " seconds." << std::endl;
-    }
-    else
-    {
-        gen_first_packet = false;
-    }
-    gen_last_trans_time = now;
-}
-
-// for Aufgabe 3
-uint32_t queueMaxPackets = 100;   // Queue size in packets
-static double g_queueSizeSum = 0; // Sum of queue sizes for average calculation
-static ns3::Time g_lastQueueChangeTime = ns3::Seconds(0);
+static double g_queueSizeSum = 0;
+static Time g_lastQueueChangeTime = Seconds(0);
 static uint32_t g_currentQueueSize = 0;
 
+// Tracer function to monitor queue size changes (for Task 3 to calculate average queue size)
 void QueueTracer(uint32_t oldValue, uint32_t newValue)
 {
-    ns3::Time now = ns3::Simulator::Now();
-
-    // Update the time-weighted sum of queue sizes
+    Time now = Simulator::Now();
     double duration = (now - g_lastQueueChangeTime).GetSeconds();
-    g_queueSizeSum += g_currentQueueSize * duration;
-
+    g_queueSizeSum += g_currentQueueSize * duration; 
     g_lastQueueChangeTime = now;
     g_currentQueueSize = newValue;
-
-    // std::cout << "Time: " << now.GetSeconds() << " QSize: " << newValue << std::endl;
 }
 
 int main(int argc, char *argv[])
 {
+    // Default command line parameters
+    double meanIpd = 0.002;      // Mean Inter-Packet Delay in seconds (controls load)
+    uint32_t queueMaxPackets = 50; // Max queue capacity for the bottleneck
+    bool verbose = false;
 
-    NS_LOG_UNCOND("Aufgabe 9: Custom Topology Simulation");
+    CommandLine cmd(__FILE__);
+    cmd.AddValue("meanIpd", "Mean Inter-Packet Delay (seconds)", meanIpd); // for Task 1c to control load
+    cmd.AddValue("queueSize", "Max Packets in Bottleneck Queue", queueMaxPackets); // for Task 3 to set queue capacity
+    cmd.AddValue("verbose", "Enable logging", verbose); // it must be set to true to see logs
+    cmd.Parse(argc, argv); 
 
-    double meanIpd = 0.01;
-    ns3::CommandLine cmd(__FILE__);
-    cmd.AddValue("meanIpd", "Mean interval between bursts", meanIpd);
-    cmd.AddValue("queueSize", "Max Packets in Queue", queueMaxPackets);
-    cmd.Parse(argc, argv);
+    if (verbose) {
+        LogComponentEnable("UdpEchoClientApplication", LOG_LEVEL_INFO);
+        LogComponentEnable("UdpEchoServerApplication", LOG_LEVEL_INFO);
+    }
 
-    uint32_t num_clients = 4;
+    // Create Nodes (Task 1b)
+    NodeContainer nodes;
+    nodes.Create(4); // Topology: n0  n1  n2  n3
 
-    ns3::NodeContainer nodes;
-    nodes.Create(num_clients);
-
-    ns3::InternetStackHelper stack;
+    InternetStackHelper stack;
     stack.Install(nodes);
 
-    ns3::NetDeviceContainer all_devices;
-    std::vector<ns3::Ipv4Address> client_addresses;
-    ns3::Ipv4AddressHelper address;
-    ns3::Ipv4InterfaceContainer ifc;
+    // Create Point-to-Point Links (Task 1b):
+
+    // Fast Link: n0 -> n1 (10Mbps, 5ms)
+    PointToPointHelper p2pFast;
+    p2pFast.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
+    p2pFast.SetChannelAttribute("Delay", StringValue("5ms"));
+
+    // Bottleneck Link: n1 -> n2 (5Mbps, 5ms)
+    PointToPointHelper p2pBottleneck;
+    p2pBottleneck.SetDeviceAttribute("DataRate", StringValue("5Mbps"));
+    p2pBottleneck.SetChannelAttribute("Delay", StringValue("5ms"));
+    
+    // Setup queue for the bottleneck (for Task 3)
+    p2pBottleneck.SetQueue("ns3::DropTailQueue", "MaxSize", StringValue(std::to_string(queueMaxPackets) + "p"));
+    p2pBottleneck.DisableFlowControl(); // Important: Disable FC to allow actual packet drops
+
+// Installation of network devices and IP addresses
+    Ipv4AddressHelper address;
+    NetDeviceContainer devices;
+    Ipv4InterfaceContainer interfaces;
+
+    // n0-n1
     address.SetBase("10.1.1.0", "255.255.255.0");
+    devices = p2pFast.Install(nodes.Get(0), nodes.Get(1));
+    address.Assign(devices);
 
-    // 0 <-> 1
-    ns3::PointToPointHelper pointToPoint;
-    pointToPoint.SetDeviceAttribute("DataRate", ns3::StringValue("10Mbps"));
-    pointToPoint.SetChannelAttribute("Delay", ns3::StringValue("5ms"));
-    ns3::NetDeviceContainer devices01 = pointToPoint.Install(nodes.Get(0), nodes.Get(1));
-    all_devices.Add(devices01);
-    ifc = address.Assign(devices01);
-    client_addresses.push_back(ifc.GetAddress(0)); // Address of node 0
-    address.NewNetwork();
+    // n1-n2 (The Bottleneck)
+    address.SetBase("10.1.2.0", "255.255.255.0");
+    NetDeviceContainer devBottleneck = p2pBottleneck.Install(nodes.Get(1), nodes.Get(2));
+    address.Assign(devBottleneck);
 
-    // 1 <-> 2
-    // pointToPoint.SetDeviceAttribute("DataRate", ns3::StringValue("5Mbps"));
-    // pointToPoint.SetChannelAttribute("Delay", ns3::StringValue("5ms"));
-    // ns3::NetDeviceContainer devices12 = pointToPoint.Install(nodes.Get(1), nodes.Get(2));
-    // all_devices.Add(devices12);
-    // ifc = address.Assign(devices12);
-    // client_addresses.push_back(ifc.GetAddress(0)); // Address of node 1
-    // address.NewNetwork();
+    // n2-n3
+    address.SetBase("10.1.3.0", "255.255.255.0");
+    devices = p2pFast.Install(nodes.Get(2), nodes.Get(3));
+    interfaces = address.Assign(devices); 
 
-    // for Aufgabe 3: Create a bottleneck link with limited queue size
-    ns3::PointToPointHelper p2pBottleneck;
-    p2pBottleneck.SetDeviceAttribute("DataRate", ns3::StringValue("5Mbps"));
-    p2pBottleneck.SetChannelAttribute("Delay", ns3::StringValue("5ms"));
-    // Set DropTailQueue with specified max packets
-    p2pBottleneck.SetQueue("ns3::DropTailQueue", "MaxSize", ns3::StringValue(std::to_string(queueMaxPackets) + "p"));
-    // Disable flow control to observe packet drops.
-    p2pBottleneck.DisableFlowControl();
+    Ipv4Address dstAddress = interfaces.GetAddress(1); // Address of node n3
 
-    // Install bottleneck link between node 1 and node 2
-    NetDeviceContainer d12 = p2pBottleneck.Install(nodes.Get(1), nodes.Get(2));
-    address.Assign(d12);
-    address.NewNetwork();
+    // Setup global routing
+    Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
-    // 2 <-> 3
-    pointToPoint.SetDeviceAttribute("DataRate", ns3::StringValue("10Mbps"));
-    pointToPoint.SetChannelAttribute("Delay", ns3::StringValue("5ms"));
-    ns3::NetDeviceContainer devices23 = pointToPoint.Install(nodes.Get(2), nodes.Get(3));
-    all_devices.Add(devices23);
-    ifc = address.Assign(devices23);
-    client_addresses.push_back(ifc.GetAddress(0)); // Address of node 2
-    client_addresses.push_back(ifc.GetAddress(1)); // Address of node 3
-    address.NewNetwork();
-
-    ns3::Ipv4GlobalRoutingHelper::PopulateRoutingTables();
-    debugNodes(nodes);
-
-    uint32_t packet_length = 1024;
+    // --- Traffic Generation (Task 1c) ---
+    uint32_t packetSize = 1000; // Payload size in bytes
     uint16_t port = 9000;
 
-    // Applications: PacketSink on each client to receive packets
-    ns3::PacketSinkHelper packetSinkHelper("ns3::UdpSocketFactory", ns3::InetSocketAddress(ns3::Ipv4Address::GetAny(), port));
-    ns3::ApplicationContainer sinkApps;
-    for (uint32_t i = 0; i < num_clients; ++i)
-    {
-        sinkApps.Add(packetSinkHelper.Install(nodes.Get(i)));
-    }
-    sinkApps.Start(ns3::Seconds(0.0));
-    sinkApps.Stop(ns3::Seconds(30.0));
+    // Packet Sink on n3 ('Receiver')
+    PacketSinkHelper sinkHelper("ns3::UdpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), port));
+    ApplicationContainer sinkApp = sinkHelper.Install(nodes.Get(3));
+    sinkApp.Start(Seconds(0.0));
+    sinkApp.Stop(Seconds(30.0));
 
-    ns3::OnOffHelper onOffHelper("ns3::UdpSocketFactory", ns3::InetSocketAddress(ifc.GetAddress(1), port));
-    onOffHelper.SetAttribute("PacketSize", ns3::UintegerValue(packet_length));
-    onOffHelper.SetAttribute("DataRate", ns3::StringValue("100Mbps"));
+    // OnOff Application on n0 ('Sender')
+    OnOffHelper onOffHelper("ns3::UdpSocketFactory", InetSocketAddress(dstAddress, port));
+    onOffHelper.SetAttribute("PacketSize", UintegerValue(packetSize));
+    
+    // Set App DataRate very high to minimize serialization delay at the app layer
+    StringValue appDataRate = StringValue("100Mbps"); 
+    onOffHelper.SetAttribute("DataRate", appDataRate);
 
-    // Calculate transmission duration for 100 packets
-    // rtt = packet_length * 8 / data_rate
-    double tDuration = (packet_length * 8.0) / (100 * 1e6); // in seconds
+    // Logic to send exactly ONE packet per On-phase (Task 1c)
+    // Calculate txTime for one packet at 100Mbps
+    double txTime = (packetSize * 8.0) / 100000000.0; 
+    
+    // OnTime
+    onOffHelper.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=" + std::to_string(txTime) + "]"));
 
-    // Set OnTime to constant duration (only ONE packet must be sent)
-    onOffHelper.SetAttribute("OnTime", ns3::StringValue("ns3::ConstantRandomVariable[Constant=" + std::to_string(tDuration) + "]"));
+    // OffTime
+    double meanOffTime = meanIpd - txTime;
+    if (meanOffTime < 0) meanOffTime = 0;
 
-    // Set OffTime to achieve mean interval between bursts of 10ms
-    // meanIp => mean_interval_between_bursts
-    double meanOffTime = meanIpd - tDuration;
-    if (meanOffTime < 0)
-    {
-        meanOffTime = 0;
-    }
+    // Define OffTime attribute string
+    std::string offTimeAttr = "ns3::ExponentialRandomVariable[Mean=" + 
+                                std::to_string(meanOffTime) + 
+                                "|Bound=" +  
+                                std::to_string(meanOffTime * 20) + 
+                                "]";
 
-    // Exponential distribution for OffTime
-    std::string offTimeStr = "ns3::ExponentialRandomVariable[Mean=" + std::to_string(meanOffTime) + "|Bound=" + std::to_string(meanOffTime * 10) + "]"; // Bound to avoid extreme values, because Exponential is unbounded
-    onOffHelper.SetAttribute("OffTime", ns3::StringValue(offTimeStr));
 
-    // Install OnOff application on node 0
-    ns3::ApplicationContainer app = onOffHelper.Install(nodes.Get(0));
-    app.Start(ns3::Seconds(1.0));
-    app.Stop(ns3::Seconds(30.0));
+    onOffHelper.SetAttribute("OffTime", StringValue(offTimeAttr));
 
-    // ns3::Simulator::Stop(ns3::Seconds(1.0));
+    ApplicationContainer sourceApp = onOffHelper.Install(nodes.Get(0));
+    sourceApp.Start(Seconds(1.0));
+    sourceApp.Stop(Seconds(30.0));
 
-    // Connect transmission tracer to the OnOff application
-    app.Get(0)->TraceConnectWithoutContext("Tx", ns3::MakeCallback(&transmission_tracer));
+    // Connect Tracer to Bottleneck Queue (n1 -> n2)
+    // Getting the TxQueue of the first device in devBottleneck (it belongs to n1)
+    PointerValue ptr;
+    devBottleneck.Get(0)->GetAttribute("TxQueue", ptr);
+    Ptr<Queue<Packet>> queue = ptr.Get<Queue<Packet>>();
+    queue->TraceConnectWithoutContext("PacketsInQueue", MakeCallback(&QueueTracer));
 
-    ns3::FlowMonitorHelper flowmon;
-    ns3::Ptr<ns3::FlowMonitor> monitor = flowmon.InstallAll();
+    // ''' ------------------------------------ Flow Monitor (Task 2) --------------------------------------------------------'''
+    FlowMonitorHelper flowmon;
+    Ptr<FlowMonitor> monitor = flowmon.InstallAll();
 
-    // Aufgabe 3: Connect Queue Tracer to the bottleneck queue
-    ns3::PointerValue ptr;
-    d12.Get(0)->GetAttribute("TxQueue", ptr);
-    ns3::Ptr<ns3::Queue<ns3::Packet>> queue = ptr.Get<ns3::Queue<ns3::Packet>>();
-    queue->TraceConnectWithoutContext("PacketsInQueue", ns3::MakeCallback(&QueueTracer));
+    // Run Sim
+    Simulator::Stop(Seconds(30.0));
+    Simulator::Run();
 
-    ns3::Simulator::Run();
+    // ''' ------------------------------------ Calculate Average Queue Size (Task 3) --------------------------------------------------------'''
+    // for the last interval until simulation end (this is needed to close the integral and Account for the final queue size)
+    double simDuration = (Simulator::Now() - g_lastQueueChangeTime).GetSeconds();
+    g_queueSizeSum += g_currentQueueSize * simDuration;
+    double avgQueueSize = g_queueSizeSum / Simulator::Now().GetSeconds();
 
-    // ---------------- [Start] Flow Monitor Statistics Output ---------------- Aufgabe 2
-
+    // ''' ----------------------------------------------- Monitor and Print Results (Task 2 & 3) --------------------------------------------------------'''
     monitor->CheckForLostPackets();
+    Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier>(flowmon.GetClassifier());
+    std::map<FlowId, FlowMonitor::FlowStats> stats = monitor->GetFlowStats();
 
-    ns3::Ptr<ns3::Ipv4FlowClassifier> classifier = ns3::DynamicCast<ns3::Ipv4FlowClassifier>(flowmon.GetClassifier());
+    // Calc theoretical Offered Load
+    double offeredLoadMbps = (packetSize * 8.0) / (meanIpd * 1e6);
 
-    // Get all flow statistics in a std::map
-    std::map<ns3::FlowId, ns3::FlowMonitor::FlowStats> stats = monitor->GetFlowStats();
-    std::cout << "\n"
-              << "---------------------- Flow Monitor Statistics: -----------------------" << std::endl;
+    // Iterate flows and print CSV format
+    // TITLES for styling CSV structure: MeanIPD, OffredLoad, QueueCap, AvgQueueSize, PacketLossRate, AvgDelay, Throughput
     for (auto const &flow : stats)
     {
-        ns3::Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(flow.first);
-
-        // Identify the flow by source and destination IP addresses
-        if (t.sourceAddress == "10.1.1.1" && t.destinationAddress == "10.1.3.2")
+        Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(flow.first);
+        
+        // Filter: only look at the main flow coming from (10.1.1.1)
+        if (t.sourceAddress == "10.1.1.1") 
         {
-            // std::cout << "Flow: " << t.sourceAddress << " -> " << t.destinationAddress << "\n";
-            // std::cout << "  Sent Packets:     " << flow.second.txPackets << "\n";
-            // std::cout << "  Received Packets: " << flow.second.rxPackets << "\n";
-            // std::cout << "  Lost Packets:     " << flow.second.lostPackets << "\n";
+            double lossRate = (double)flow.second.lostPackets / flow.second.txPackets * 100.0;
+            double avgDelayMs = (flow.second.rxPackets > 0) ? 
+                                (flow.second.delaySum.GetSeconds() / flow.second.rxPackets) * 1000 : 0;
+            double throughputMbps = (flow.second.rxBytes * 8.0) / (30.0 * 1e6); // based on total sim time
 
-            double lossRate = 0.0;
-            if (flow.second.txPackets > 0)
-            {
-                lossRate = (double)flow.second.lostPackets / flow.second.txPackets * 100.0;
-            }
-
-            std::cout << "  Packet Loss Rate: " << lossRate << " %\n";
-
-            // Throughput calculation
-            if (flow.second.rxPackets > 0)
-            {
-                double avgDelay = (flow.second.delaySum.GetSeconds() / flow.second.rxPackets) * 1000;
-                std::cout << "  Average Delay:    " << avgDelay << " ms\n";
-            }
+            std::cout << meanIpd << "," 
+                      << offeredLoadMbps << ", "
+                      << queueMaxPackets << ", "
+                      << avgQueueSize << ", "
+                      << lossRate << ", " 
+                      << avgDelayMs << ", "
+                      << throughputMbps
+                      << std::endl;
         }
     }
 
-    // ---------------- [End] Flow Monitor Statistics Output ---------------- Aufgabe 2
-
-    // Aufgabe 3: Calculate and output average queue size
-    double duration = (ns3::Simulator::Now() - g_lastQueueChangeTime).GetSeconds();
-    g_queueSizeSum += g_currentQueueSize * duration;
-
-    double avgQueueSize = g_queueSizeSum / ns3::Simulator::Now().GetSeconds();
-    std::cout << "  Average Queue Size: " << avgQueueSize << " packets" << std::endl;
-
-    ns3::Simulator::Destroy();
-
+    Simulator::Destroy();
     return 0;
 }
