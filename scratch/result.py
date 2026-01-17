@@ -2,31 +2,23 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import io
 
-# خواندن فایل با فرمت فعلی
 with open("results.csv", "r") as file:
     content = file.read()
 
-# تقسیم محتوا بر اساس خطوط
 lines = content.strip().split('\n')
 header = lines[0].split(',')
 
-# پردازش داده‌ها
 data = []
 for line in lines[1:]:
-    # حذف فاصله‌های اضافی و تقسیم بر اساس کاما
     parts = line.replace(' ', '').split(',')
-    # اطمینان از تعداد صحیح ستون‌ها
     if len(parts) == len(header):
         data.append(parts)
 
-# ایجاد DataFrame
 df = pd.DataFrame(data, columns=header)
 
-# تبدیل ستون‌ها به نوع عددی
 numeric_columns = ['MeanIPD', 'OfferedLoad', 'QueueCap', 'AvgQueue', 'LossRate', 'Delay', 'Throughput']
 df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric)
 
-# بقیه کد شما بدون تغییر...
 # Filter by a fixed queue size (50 packets, ...) to vary the load (Task 2)
 df_fixed_queue = df[df['QueueCap'] == 50].sort_values(by='OfferedLoad')
 
